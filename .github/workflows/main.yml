@@ -1,0 +1,240 @@
+
+name: TITAN PC - Windows Cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      performance:
+        description: "Modo de desempenho"
+        required: true
+        type: choice
+        default: MAXIMO
+        options:
+          - MAXIMO
+          - EQUILIBRADO
+
+jobs:
+  titan-pc:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    env:
+      RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+      TITAN_PERFORMANCE: ${{ inputs.performance }}
+
+    steps:
+      - name: TITAN PC - Preparar Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "================================"
+          Write-Host "       TITAN PC V1"
+          Write-Host "   WINDOWS HIGH PERFORMANCE"
+          Write-Host "================================"
+
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
+            throw "Configure o secret RDP_PASSWORD."
+          }
+
+          # Criar usuario remoto
+          $password = ConvertTo-SecureString `
+            $env:RDP_PASSWORD -AsPlainText -Force
+
+          $user = Get-LocalUser -Name "WinRemote" `
+            -ErrorAction SilentlyContinue
+
+          if ($null -eq $user) {
+            New-LocalUser `
+              -Name "WinRemote" `
+              -Password $password `
+              -Description "Titan PC Remote User" `
+              -PasswordNeverExpires
+          } else {
+            Set-LocalUser `
+              -Name "WinRemote" `
+              -Password $password
+          }
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member "WinRemote" `
+            -ErrorAction SilentlyContinue
+
+          # Ativar area de trabalho remota
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name fDenyTSConnections -Value 0
+
+          Set-Service -Name TermService -StartupType Automatic
+          Start-Service -Name TermService
+
+          # Firewall: permitir RDP somente pela rede Tailscale
+          Disable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
+
+          Remove-NetFirewallRule `
+            -DisplayName "Titan PC RDP Tailscale" `
+            -ErrorAction SilentlyContinue
+
+          New-NetFirewallRule `
+            -DisplayName "Titan PC RDP Tailscale" `
+            -Direction Inbound `
+            -Protocol TCP `
+            -LocalPort 3389 `
+            -RemoteAddress "100.64.0.0/10" `
+            -Action Allow `
+            -Profile Any
+
+          # Alto desempenho
+          powercfg /setactive SCHEME_MIN
+
+          # Criar papel de parede TITAN PC
+          New-Item -ItemType Directory `
+            -Path "C:\TitanPC" -Force | Out-Null
+
+          Add-Type -AssemblyName System.Drawing
+
+          $bmp = [System.Drawing.Bitmap]::new(1920,1080)
+          $graphics = [System.Drawing.Graphics]::FromImage($bmp)
+
+          $graphics.Clear(
+            [System.Drawing.Color]::FromArgb(7,12,28)
+          )
+
+          $font = [System.Drawing.Font]::new(
+            "Arial", 100,
+            [System.Drawing.FontStyle]::Bold
+          )
+
+          $brush = [System.Drawing.SolidBrush]::new(
+            [System.Drawing.Color]::FromArgb(65,145,255)
+          )
+
+          $subfont = [System.Drawing.Font]::new(
+            "Arial", 30,
+            [System.Drawing.FontStyle]::Regular
+          )
+
+          $white = [System.Drawing.SolidBrush]::new(
+            [System.Drawing.Color]::White
+          )
+
+          $format = [System.Drawing.StringFormat]::new()
+          $format.Alignment = "Center"
+          $format.LineAlignment = "Center"
+
+          $rect = [System.Drawing.RectangleF]::new(
+            0, 350, 1920, 160
+          )
+
+          $graphics.DrawString(
+            "TITAN PC", $font, $brush, $rect, $format
+          )
+
+          $subrect = [System.Drawing.RectangleF]::new(
+            0, 510, 1920, 80
+          )
+
+          $graphics.DrawString(
+            "HIGH PERFORMANCE CLOUD", 
+            $subfont, $white, $subrect, $format
+          )
+
+          $wallpaper = "C:\TitanPC\TitanPC.bmp"
+
+          $bmp.Save(
+            $wallpaper,
+            [System.Drawing.Imaging.ImageFormat]::Bmp
+          )
+
+          $graphics.Dispose()
+          $bmp.Dispose()
+          $font.Dispose()
+          $subfont.Dispose()
+          $brush.Dispose()
+          $white.Dispose()
+          $format.Dispose()
+
+          # Aplicar papel de parede ao perfil padrao
+          $defaultHive = "C:\Users\Default\NTUSER.DAT"
+
+          if (Test-Path $defaultHive) {
+            & reg.exe load HKU\TitanDefault $defaultHive
+            if ($LASTEXITCODE -eq 0) {
+              & reg.exe add `
+                "HKU\TitanDefault\Control Panel\Desktop" `
+                /v Wallpaper /t REG_SZ /d $wallpaper /f
+
+              & reg.exe add `
+                "HKU\TitanDefault\Control Panel\Desktop" `
+                /v WallpaperStyle /t REG_SZ /d 10 /f
+
+              & reg.exe add `
+                "HKU\TitanDefault\Control Panel\Desktop\WindowMetrics" `
+                /v MinAnimate /t REG_SZ /d 0 /f
+
+              & reg.exe add `
+                "HKU\TitanDefault\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" `
+                /v EnableTransparency /t REG_DWORD /d 0 /f
+
+              & reg.exe add `
+                "HKU\TitanDefault\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects" `
+                /v VisualFXSetting /t REG_DWORD /d 2 /f
+
+              & reg.exe unload HKU\TitanDefault
+            }
+          }
+
+          # Limpeza segura de arquivos temporarios
+          Get-ChildItem $env:TEMP -Force `
+            -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force `
+            -ErrorAction SilentlyContinue
+
+          Clear-RecycleBin -Force `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Titan PC configurado!"
+
+      - name: Conectar Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Verificar conexao e mostrar endereco
+        shell: pwsh
+        run: |
+          $ip = (tailscale ip -4).Trim()
+
+          if ([string]::IsNullOrWhiteSpace($ip)) {
+            throw "Nao foi possivel obter o IP Tailscale."
+          }
+
+          "TITAN_IP=$ip" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Append
+
+          Write-Host "================================"
+          Write-Host "       TITAN PC ONLINE"
+          Write-Host "================================"
+          Write-Host "IP: $ip"
+          Write-Host "PORTA: 3389"
+          Write-Host "USUARIO: WinRemote"
+          Write-Host "================================"
+
+      - name: Manter TITAN PC funcionando
+        shell: pwsh
+        run: |
+          Write-Host "TITAN PC iniciado."
+
+          while ($true) {
+            $rdp = Get-Service TermService
+
+            if ($rdp.Status -ne "Running") {
+              Start-Service TermService
+            }
+
+            Start-Sleep -Seconds 30
+          }
